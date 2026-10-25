@@ -66,6 +66,9 @@ def candidates(data):
 
 
 def solve(data, seconds=60, locks=None):
+    if data.get("config", {}).get("scheduling_mode") == "flexible":
+        from .flex_solver import solve_flexible
+        return solve_flexible(data, seconds, locks)
     began = time.monotonic()
     errors = validate(data)
     if errors:
@@ -269,4 +272,4 @@ def resource_hints(data, sections):
         if c["lab_periods"]:
             n = sum(c["lab_type"] in room_types(r) for r in data["rooms"])
             hints.append(f"{c['id']} 每班需 {c['lab_periods']} 节 {c['lab_type']}，匹配房间 {n} 间。可检查实验时段错峰、合法房间和开班上限。")
-    return hints[:30] + ["以上为核查方向，尚非经重算验证的最小松弛方案。严格六区块不会放宽。"]
+    return hints[:30] + ["以上为核查方向，尚非经重算验证的最小松弛方案。"]

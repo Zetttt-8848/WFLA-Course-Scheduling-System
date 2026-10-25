@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block content %}<h1>公共课分工</h1><form method="get"><label>年级<select name="grade" onchange="this.form.submit()">{% for g in [11,12] %}<option {% if g==grade %}selected{% endif %}>{{ g }}</option>{% endfor %}</select></label></form>
+{% if not classes %}<section>请先<a href="{{ url_for('intake',grade=grade) }}">录入该年级学生</a>。</section>{% else %}
+<p class="muted">TOK / Career 每位老师负责两个行政班，两个班分别上课。</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="v" value="{{ v }}"><input type="hidden" name="grade" value="{{ grade }}">
+{% for name,count in specs %}<section><h2>{{ name }} · 每班{{ (4 if grade==11 else 3) if name=='TOK' else 1 }}节</h2><div class="fields">{% for i in range(count) %}<label class="field">{{ classes[2*i:2*i+2]|join(' / ') if name in ['TOK','Career Navigation'] else '任教老师' }}<select name="{{ name }}" required><option value="">选择老师</option>{% for t in data.teachers %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select></label>{% endfor %}</div></section>{% endfor %}<button>保存公共课分工</button> <a href="{{ url_for('staff') }}">添加老师</a></form>{% endif %}
+<details><summary>已有公共课 · {{ data.activities|length }} 个编组</summary><a href="{{ url_for('table_view',table='activities') }}">修改分工或周课时</a></details>{% endblock %}

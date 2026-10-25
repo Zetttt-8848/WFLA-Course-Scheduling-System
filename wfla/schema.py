@@ -23,7 +23,8 @@ TABLES = {
         "max_periods": ("周负荷上限", "int", 24)}),
     "qualifications": ("教师资格", {"teacher": ("教师编码", "str", ""), "course": ("开课编码", "str", "")}),
     "rooms": ("教室", {"id": ("教室编码", "str", ""), "name": ("教室名称", "str", ""),
-        "capacity": ("容量", "int", 18), "types": ("能力用英文分号分隔", "str", "普通")}),
+        "capacity": ("容量", "int", 18), "types": ("能力用英文分号分隔", "str", "普通"),
+        "preference": ("使用代价0优先", "int", 0)}),
     "unavailable": ("资源禁排", {"kind": ("student或teacher或room", "str", "teacher"),
         "resource": ("资源编码", "str", ""), "day": ("星期1起", "int", 1),
         "period": ("节次1起", "int", 1), "reason": ("原因", "str", "")}),
@@ -38,6 +39,16 @@ TABLES = {
         "teacher": ("教师可空", "str", ""), "room": ("教室可空", "str", ""),
         "counts_load": ("计教师负荷1或0", "int", 1)}),
     "event_students": ("活动学生", {"event": ("活动编码", "str", ""), "student": ("学生编码", "str", "")}),
+    "calendar": ("年级节次", {"grade": ("年级", "int", 11), "day": ("星期", "int", 1),
+        "periods": ("当天节数", "int", 9)}),
+    "activities": ("公共课程", {"id": ("编组编码", "str", ""), "name": ("名称", "str", "TOK"),
+        "grade": ("年级", "int", 11), "admin_classes": ("行政班用英文分号分隔", "str", ""),
+        "periods": ("周课时", "int", 1), "teacher": ("教师编码", "str", ""),
+        "room_type": ("教室类型", "str", "普通"), "room": ("固定教室可空", "str", "")}),
+    "activity_members": ("公共课学生", {"activity": ("编组编码", "str", ""), "student": ("学生编码", "str", "")}),
+    "study_rules": ("自修安排", {"grade": ("年级", "int", 11), "periods": ("每生周自修节数", "int", 5),
+        "rooms": ("允许教室英文分号分隔", "str", "C301;C302"),
+        "unassigned": ("每生待安排节数", "int", 0)}),
 }
 
 
@@ -96,3 +107,17 @@ def day_period(data, index):
 
 def room_types(room):
     return set(x.strip() for x in room["types"].split(";") if x.strip())
+
+
+def active_slots(data, grade):
+    overrides = {r["day"]: r["periods"] for r in data.get("calendar", []) if r["grade"] == grade}
+    return [slot(data, day, p) for day in range(1, data["config"]["days"]+1)
+            for p in range(1, overrides.get(day, data["config"]["periods_per_day"])+1)]
+
+
+def activity_students(data, activity):
+    explicit = [r["student"] for r in data.get("activity_members", []) if r["activity"] == activity["id"]]
+    if explicit:
+        return sorted(explicit)
+    classes = set(activity["admin_classes"].split(";")) - {""}
+    return sorted(s["id"] for s in data["students"] if s["grade"] == activity["grade"] and s["admin_class"] in classes)

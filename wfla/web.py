@@ -8,11 +8,12 @@ import secrets
 import threading
 import zipfile
 from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
-from .schema import TABLES, empty_dataset, normalize, slot
+from .schema import TABLES, empty_dataset, normalize, slot, active_slots, day_period
 from .validation import validate
 from .storage import Store, worker
 from .demo import demo_dataset
 from .io import workbook_bytes, import_bytes, timetable_rows, csv_bytes, schedule_xlsx
+from .intake import school_dataset, school_demo, add_combination, add_staff_pool, add_common_courses, choice_template, import_choices, CATALOG
 
 ROOT=Path(__file__).resolve().parent.parent
 
@@ -24,7 +25,7 @@ def project_archive():
             for file in (ROOT/folder).rglob("*"):
                 if file.is_file() and "__pycache__" not in file.parts and file.suffix in (".py",".html",".css",".md"):
                     archive.write(file,"WFLA-Course-Scheduling-System/"+file.relative_to(ROOT).as_posix())
-        for name in ("README.md","LICENSE",".gitignore","requirements.txt","requirements-dev.txt","run.py","start.bat","start.ps1"):
+        for name in ("README.md","LICENSE",".gitignore","requirements.txt","requirements-dev.txt","pytest.ini","run.py","start.bat","start.ps1"):
             if (ROOT/name).exists():archive.write(ROOT/name,"WFLA-Course-Scheduling-System/"+name)
     return output.getvalue()
 
@@ -52,12 +53,13 @@ def create_app(database=None,testing=False):
 
     def current():
         raw=request.form.get("v") if request.method=="POST" else request.args.get("v")
-        try: identifier=int(raw or session.get("dataset_id",0))
+        recent=store.list_datasets() if not raw and not session.get('dataset_id') else []
+        try: identifier=int(raw or session.get("dataset_id",recent[0]['id'] if recent else 0))
         except ValueError:abort(400)
         data=store.get(identifier)
         if not data:
             if raw:abort(404)
-            identifier=store.save(empty_dataset());data=store.get(identifier)
+            identifier=store.save(school_dataset());data=store.get(identifier)
         session["dataset_id"]=identifier
         return identifier,data
 
@@ -71,6 +73,107 @@ def create_app(database=None,testing=False):
     def index():
         identifier,data=current()
         return render_template("index.html",data=data,v=identifier,issues=validate(data),runs=store.list_runs())
+
+    @app.post('/school/new')
+    def new_school():
+        save(school_dataset()); flash('新学期已建立，旧方案保留。')
+        return redirect(url_for('index'))
+
+    @app.post('/school/demo')
+    def demo_school():
+        data=school_demo(1);data['config']['quick_feasible']=False
+        save(data); flash('已载入12名虚构学生。实验室、教师和分班均为演示数据。')
+        return redirect(url_for('index'))
+
+    @app.get('/manage')
+    def manage():
+        identifier,data=current()
+        return render_template('manage.html',v=identifier,data=data)
+
+    @app.route('/intake',methods=['GET','POST'])
+    def intake():
+        identifier,data=current()
+        try: grade=int(request.values.get('grade',11))
+        except ValueError: grade=11
+        if grade not in (10,11,12):abort(400)
+        if request.method=='POST':
+            try:
+                if request.form.get('action')=='upload':
+                    upload=request.files.get('file')
+                    if not upload or not upload.filename: raise ValueError('请选择选课Excel')
+                    updated,count=import_choices(data,upload.read(),upload.filename)
+                else:
+                    count=int(request.form.get('count',0))
+                    updated=add_combination(data,grade,request.form.get('admin_class','').strip(),count,[request.form.get(f'choice{i}','') for i in range(1,7)])
+                save(updated);flash(f'已录入{count}名学生。')
+                return redirect(url_for('intake',grade=grade))
+            except (ValueError,KeyError) as exc:flash(str(exc),'error')
+        return render_template('intake.html',data=data,v=identifier,grade=grade,courses=[c for c in data['courses'] if c['grade']==grade])
+
+    @app.get('/choices-template/<kind>.xlsx')
+    def choices_template(kind):
+        if kind not in ('students','combinations'):abort(404)
+        _,data=current()
+        return download(choice_template(data,kind),f'WFLA-{kind}.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    @app.route('/staff',methods=['GET','POST'])
+    def staff():
+        identifier,data=current()
+        if request.method=='POST':
+            try:
+                names=[s.strip() for s in request.form.get('names','').splitlines() if s.strip()]
+                updated=add_staff_pool(data,request.form.get('code','').strip(),request.form.get('family',''),request.form.getlist('levels'),
+                    [int(g) for g in request.form.getlist('grades')],int(request.form.get('count',0)),int(request.form.get('max_periods',24)),names or None)
+                save(updated);flash('教师已添加。跨年级任教会统一检查时间冲突。');return redirect(url_for('staff'))
+            except (ValueError,KeyError) as exc:flash(str(exc),'error')
+        families={c['family']:c['name'] for c in data['courses']}
+        return render_template('staff.html',data=data,v=identifier,families=families)
+
+    @app.route('/common',methods=['GET','POST'])
+    def common_courses():
+        identifier,data=current()
+        try: grade=int(request.values.get('grade',11))
+        except ValueError:grade=11
+        if grade not in (11,12):abort(400)
+        classes=sorted({s['admin_class'] for s in data['students'] if s['grade']==grade})
+        names=['TOK']+(['体育','会考地理','会考历史','会考政治','Career Navigation'] if grade==11 else [])
+        specs=[(name,(len(classes)+1)//2 if name in ('TOK','Career Navigation') else 1) for name in names]
+        if request.method=='POST':
+            try:
+                mapping={name:request.form.getlist(name) for name,_ in specs}
+                save(add_common_courses(data,grade,mapping));flash('已按行政班分别生成公共课；具体节次由排课决定。')
+                return redirect(url_for('common_courses',grade=grade))
+            except ValueError as exc:flash(str(exc),'error')
+        return render_template('common.html',data=data,v=identifier,grade=grade,classes=classes,specs=specs)
+
+    @app.route('/rules',methods=['GET','POST'])
+    def school_rules():
+        identifier,data=current()
+        if request.method=='POST':
+            try:
+                updated=deepcopy(data)
+                updated['config'].update(title=request.form.get('title',data['config']['title']),term=request.form.get('term',data['config']['term']))
+                if data['config'].get('scheduling_mode')=='flexible':
+                    updated['calendar']=[r for r in updated['calendar'] if r['grade'] not in (11,12)]
+                    updated['study_rules']=[r for r in updated['study_rules'] if r['grade'] not in (11,12)]
+                    for g in (11,12):
+                        for day in range(1,6):
+                            n=int(request.form[f'g{g}d{day}'])
+                            if not 1<=n<=9:raise ValueError('每天节数需为1—9')
+                            updated['calendar'].append(dict(grade=g,day=day,periods=n))
+                        study,unassigned=int(request.form[f'study{g}']),int(request.form[f'pending{g}'])
+                        if min(study,unassigned)<0:raise ValueError('课时不能为负数')
+                        updated['study_rules'].append(dict(grade=g,periods=study,unassigned=unassigned,rooms=request.form[f'rooms{g}'].strip()))
+                    updated['config']['periods_per_day']=max([9]+[r['periods'] for r in updated['calendar']])
+                    for c in updated['courses']:
+                        c['periods']=int(request.form.get('hours_'+c['id'],c['periods']))
+                        c['lab_periods']=int(request.form.get('labs_'+c['id'],c['lab_periods']))
+                        if c['lab_periods']<2:c['lab_doubles']=0
+                save(updated);flash('规则已保存。');return redirect(url_for('school_rules'))
+            except (ValueError,KeyError) as exc:flash(str(exc),'error')
+        calendar={(r['grade'],r['day']):r['periods'] for r in data.get('calendar',[])}
+        studies={r['grade']:r for r in data.get('study_rules',[])}
+        return render_template('rules.html',data=data,v=identifier,calendar=calendar,studies=studies)
 
     @app.post("/select")
     def select():
@@ -219,13 +322,26 @@ def create_app(database=None,testing=False):
         field={"student":"学生","teacher":"教师","room":"教室","section":"教学班"}.get(kind)
         if not field:abort(400)
         options = [(r["id"],r.get("name",r["id"])) for r in (result["sections"] if kind=="section" else data[{"student":"students","teacher":"teachers","room":"rooms"}[kind]])]
+        if kind=='section':options.extend(('COMMON:'+a['id'],a['name']+' '+a['admin_classes']) for a in data.get('activities',[]))
         selected=request.args.get("id",options[0][0] if options else "")
         filtered=[r for r in rows if selected in r[field].split(";")]
         grid={}
         for r in filtered:
             for period in range(r["起始节"],r["起始节"]+r["节数"]):grid.setdefault((r["星期"],period),[]).append(r)
         coverage=[s for s in result["sections"] if selected in s["students"]] if kind=="student" else []
-        return render_template("view.html",run=run,data=data,kind=kind,options=options,selected=selected,grid=grid,coverage=coverage)
+        grade=None
+        if kind=='student':grade=next((s['grade'] for s in data['students'] if s['id']==selected),None)
+        elif kind=='section':
+            selected_course=next((s['course'] for s in result['sections'] if s['id']==selected),None)
+            grade=next((c['grade'] for c in data['courses'] if c['id']==selected_course),None)
+            if selected.startswith('COMMON:'):grade=next((a['grade'] for a in data.get('activities',[]) if 'COMMON:'+a['id']==selected),None)
+        valid_cells={day_period(data,p) for p in active_slots(data,grade)} if grade else None
+        period_count=max((p for _,p in valid_cells),default=data['config']['periods_per_day']) if valid_cells is not None else data['config']['periods_per_day']
+        display_name=dict(options).get(selected,selected)
+        teacher_names={t['id']:t['name'] for t in data['teachers']}
+        return render_template("view.html",run=run,data=data,kind=kind,options=options,selected=selected,grid=grid,coverage=coverage,
+            valid_cells=valid_cells,period_count=period_count,display_name=display_name,teacher_names=teacher_names,
+            room_names={r['id']:r['name'] for r in data['rooms']})
 
     @app.get("/run/<int:run_id>/export/<fmt>")
     def export(run_id,fmt):
@@ -261,10 +377,10 @@ def create_app(database=None,testing=False):
         return redirect(url_for("run_page",run_id=new_id))
 
     @app.get("/download/project.zip")
-    def project_zip():return download(project_archive(),"WFLA-Course-Scheduling-System-v0.1.0.zip","application/zip")
+    def project_zip():return download(project_archive(),"WFLA-Course-Scheduling-System-v0.2.0.zip","application/zip")
 
     @app.get("/health")
-    def health():return {"status":"ok","version":"0.1.0"}
+    def health():return {"status":"ok","version":"0.2.0"}
 
     @app.errorhandler(400)
     @app.errorhandler(404)

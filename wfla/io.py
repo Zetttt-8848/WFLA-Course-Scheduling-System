@@ -4,7 +4,7 @@ import io
 import json
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
-from .schema import TABLES, empty_dataset, normalize, day_period
+from .schema import TABLES, empty_dataset, normalize, day_period, active_slots, activity_students
 
 
 def safe_cell(value):
@@ -23,7 +23,7 @@ def workbook_bytes(data=None):
         ["格式", "首行是固定字段编码，勿改；鼠标悬停表头看中文说明。每张表支持网页逐行编辑。"],
         ["选课", "每生6行。10年级NONE且无English A；11/12默认3HL，4HL须本学期approved特批。"],
         ["课程族", "English A使用ENGLISH_A；同科HL/SL使用同一family。语言填写zh/en/es等。"],
-        ["区块", "严格6块。某年级区块时段表完全空白时自动分配；填了则未列时段不可用于该年级学科课。"],
+        ["模式", "灵活并行按学生避免冲突；旧严格区块模式另保留。年级节次、自修与公共课请在对应表配置。"],
         ["班数", "max_sections=0采用容量下限+1的有限候选范围；无解时可显式增加，不代表所有班数都无解。"],
         ["课型", "lab_periods计入periods；双节次数指两节课的次数。实验室多能力用英文分号分隔。"],
         ["导入", "完整导入新版本，不合并、不覆盖旧版本。拒绝公式，不执行宏。"],
@@ -80,10 +80,12 @@ def import_bytes(raw, filename):
                 raise ValueError("课表设置格式错误，请保留模板格式或用网页设置")
     for key,(label,fields) in TABLES.items():
         if label not in wb.sheetnames:
+            if key in ('calendar','activities','activity_members','study_rules'): continue
             raise ValueError("模板缺少工作表："+label)
         rows=iter(wb[label].values)
         headers=list(next(rows,()))
-        if headers != list(fields):
+        legacy_rooms = key == 'rooms' and headers == ['id','name','capacity','types']
+        if headers != list(fields) and not legacy_rooms:
             raise ValueError(label+"表头不匹配，请下载当前模板")
         for line,values in enumerate(rows,2):
             if any(v is not None for v in values):
@@ -108,7 +110,30 @@ def timetable_rows(data,result):
         rows.append({"课次":e["id"],"星期":e["day"],"起始节":e["period"],"节数":e["duration"],"年级":"","区块":"",
             "教学班":"","课程":e["name"],"层级":"","课型":"固定活动","教师":e["teacher"],"教室":e["room"],
             "人数":len(members),"学生":";".join(members)})
-    return sorted(rows,key=lambda r:(r["星期"],r["起始节"],r["课次"]))
+    activities = {a['id']:a for a in data.get('activities',[])}
+    for lesson in result.get('activities',[]):
+        a = activities[lesson['activity']]; members = activity_students(data,a)
+        day,period = day_period(data,lesson['start'])
+        rows.append({'课次':lesson['id'],'星期':day,'起始节':period,'节数':1,'课程':a['name'],'层级':'',
+            '年级':a['grade'],'区块':0,'课型':'公共课','教学班':'COMMON:'+a['id'],'教师':a['teacher'],
+            '教室':lesson['room'],'人数':len(members),'学生':';'.join(members)})
+    for lesson in result.get('studies',[]):
+        day,period = day_period(data,lesson['start']); members = lesson['students']
+        rows.append({'课次':lesson['id'],'星期':day,'起始节':period,'节数':1,'课程':'自修','层级':'',
+            '年级':'','区块':0,'课型':'自修','教学班':'','教师':'','教室':lesson['room'],'人数':len(members),'学生':';'.join(members)})
+    if data['config'].get('scheduling_mode') == 'flexible':
+        occupied = set()
+        for row in rows:
+            for sid in row['学生'].split(';'):
+                for offset in range(row['节数']): occupied.add((sid,(row['星期']-1)*data['config']['periods_per_day']+row['起始节']-1+offset))
+        for s in data['students']:
+            for p in active_slots(data,s['grade']):
+                if (s['id'],p) in occupied: continue
+                day,period = day_period(data,p)
+                rows.append({'课次':f"UNASSIGNED:{s['id']}:{p}",'星期':day,'起始节':period,'节数':1,'课程':'待安排','层级':'',
+                    '年级':s['grade'],'区块':0,'课型':'待安排','教学班':'','教师':'','教室':'','人数':1,'学生':s['id']})
+    columns = ['课次','星期','起始节','节数','年级','区块','教学班','课程','层级','课型','教师','教室','人数','学生']
+    return [{k:r.get(k,'') for k in columns} for r in sorted(rows,key=lambda r:(r["星期"],r["起始节"],r["课次"]))]
 
 
 def csv_bytes(rows):

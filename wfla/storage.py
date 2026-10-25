@@ -29,7 +29,8 @@ class Store:
     def get(self,identifier):
         with self.connect() as db:
             row=db.execute("SELECT * FROM datasets WHERE id=?",(identifier,)).fetchone()
-        return json.loads(row["body"]) if row else None
+        from .schema import normalize
+        return normalize(json.loads(row["body"])) if row else None
 
     def list_datasets(self):
         with self.connect() as db:

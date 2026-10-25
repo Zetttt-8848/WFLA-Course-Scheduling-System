@@ -198,6 +198,9 @@ def validate(data, require_complete=True):
             if load>maps["teachers"][tid]["max_periods"]:error("teachers",maps["teachers"][tid],"max_periods","固定活动本身已超过周负荷上限")
     if require_complete and not students:
         error("students", {}, "id", "请先导入学生选课，或载入虚构演示数据")
+    if not issues:
+        from .school_validation import validate_school
+        issues.extend(validate_school(data))
     return issues
 
 

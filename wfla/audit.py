@@ -1,11 +1,12 @@
 """Recompute hard constraints from plain results, without solver expressions."""
 from collections import defaultdict, Counter
-from .schema import slot, day_period, room_types
+from .schema import slot, day_period, room_types, active_slots, activity_students
 from .validation import validate
 
 
 def audit(data, result, locks=None):
     problems = ["输入："+e["message"] for e in validate(data)]
+    flexible = data['config'].get('scheduling_mode') == 'flexible'
     courses = {c["id"]: c for c in data["courses"]}
     teachers = {t["id"]: t for t in data["teachers"]}
     rooms = {r["id"]: r for r in data["rooms"]}
@@ -65,7 +66,7 @@ def audit(data, result, locks=None):
         expected = sorted(r["course"] for r in data["choices"] if r["student"] == student)
         if sorted(memberships[student]) != expected:
             problems.append(f"学生 {student} 的课程覆盖不完整或重复")
-        if sorted(blocks[student]) != [1, 2, 3, 4, 5, 6]:
+        if not flexible and sorted(blocks[student]) != [1, 2, 3, 4, 5, 6]:
             problems.append(f"学生 {student} 未恰好覆盖六区块")
     hours, doubles, class_rooms = Counter(), Counter(), defaultdict(set)
     lesson_ids = set()
@@ -94,7 +95,9 @@ def audit(data, result, locks=None):
         if required not in room_types(r) or r["capacity"] < len(s["students"]):
             problems.append(f"{eid} 房间类型不符或容量不足")
         for p in range(start,start+duration):
-            if block_map.get((c["grade"],p)) != s["block"]:
+            if flexible and p not in active_slots(data,c['grade']):
+                problems.append(f'{eid} 超出年级在校节次')
+            if not flexible and block_map.get((c["grade"],p)) != s["block"]:
                 problems.append(f"{eid} 跨出所属区块")
         occupy("section", sid, start, duration, eid)
         occupy("teacher", s["teacher"], start, duration, eid)
@@ -105,6 +108,51 @@ def audit(data, result, locks=None):
         hours[sid,lesson["kind"]] += duration
         doubles[sid,lesson["kind"]] += duration == 2
         class_rooms[sid].add(lesson["room"])
+    if flexible:
+        activity_map = {a['id']:a for a in data.get('activities',[])}
+        activity_hours, study_hours = Counter(), Counter()
+        extra_ids = set(lesson_ids)
+        for lesson in result.get('activities',[]):
+            aid,eid = lesson.get('activity'),lesson['id']
+            if eid in extra_ids: problems.append('重复公共课课次：'+eid)
+            extra_ids.add(eid)
+            if aid not in activity_map or lesson['room'] not in rooms:
+                problems.append('公共课或教室不存在：'+eid); continue
+            a = activity_map[aid]; members = activity_students(data,a)
+            p = lesson['start']; room = rooms[lesson['room']]
+            if lesson['duration'] != 1 or p not in active_slots(data,a['grade']):
+                problems.append('公共课起点/时长不合法：'+eid); continue
+            if a['room_type'] not in room_types(room) or len(members) > room['capacity'] or (a['room'] and a['room'] != room['id']):
+                problems.append('公共课教室类型/容量/指定房间不符：'+eid)
+            occupy('room',room['id'],p,1,eid); occupy('teacher',a['teacher'],p,1,eid)
+            for sid in members: occupy('student',sid,p,1,eid)
+            activity_hours[aid] += 1; load[a['teacher']] += 1
+        for aid,a in activity_map.items():
+            if activity_hours[aid] != a['periods']: problems.append('公共课课时不达标：'+aid)
+        rules = {r['grade']:r for r in data.get('study_rules',[])}
+        for lesson in result.get('studies',[]):
+            eid,p,rid = lesson['id'],lesson['start'],lesson['room']
+            if eid in extra_ids: problems.append('重复自修课次：'+eid)
+            extra_ids.add(eid)
+            members = lesson['students']
+            if rid not in rooms or lesson['duration'] != 1 or not members:
+                problems.append('自修房间/时长/成员无效：'+eid); continue
+            if len(members) != len(set(members)) or len(members) > rooms[rid]['capacity'] or '自修' not in room_types(rooms[rid]):
+                problems.append('自修人数重复、超容量或房间类型错误：'+eid)
+            occupy('room',rid,p,1,eid)
+            for sid in members:
+                if sid not in students:
+                    problems.append('自修学生不存在：'+str(sid)); continue
+                g = students[sid]['grade']; rule = rules.get(g)
+                if not rule or rid not in rule['rooms'].split(';') or p not in active_slots(data,g):
+                    problems.append('自修超出年级节次或允许房间：'+sid)
+                occupy('student',sid,p,1,eid); study_hours[sid] += 1
+        for sid,s in students.items():
+            rule = rules.get(s['grade'])
+            if rule:
+                if study_hours[sid] != rule['periods']: problems.append('自修课时不达标：'+sid)
+                free = sum(('student',sid,p) not in occupied for p in active_slots(data,s['grade']))
+                if free != rule['unassigned']: problems.append('待安排节数不符：'+sid)
     counts = Counter(r["course"] for r in data["choices"])
     for sid, s in sections.items():
         if s["course"] not in courses:
