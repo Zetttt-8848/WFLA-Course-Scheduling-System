@@ -1,0 +1,5 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}WFLA 本机排课系统{% endblock %}</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">{% block head %}{% endblock %}</head>
+<body><header><strong>WFLA 本机排课系统</strong><span>10—12 年级 · 严格六区块 · v0.1.0</span></header>
+<nav><a href="{{ url_for('index') }}">首页</a><a href="{{ url_for('settings') }}">课表设置</a><a href="{{ url_for('import_page') }}">导入与模板</a><a href="{{ url_for('validation') }}">校验与排课</a><a href="{{ url_for('project_zip') }}">下载程序 ZIP</a></nav>
+<main>{% for category,message in get_flashed_messages(with_categories=true) %}<p class="notice {{ category }}" role="status">{{ message }}</p>{% endfor %}
+{% block content %}{% endblock %}</main><footer>数据保存在本机 instance 目录。页面不会将学校数据上传到 GitHub 或外部服务。MVP 尚不含完整最小松弛诊断、软评分、锁课重排、A/B 周和 TOK 自动编组。</footer></body></html>

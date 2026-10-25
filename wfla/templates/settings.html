@@ -1,0 +1,3 @@
+{% extends 'base.html' %}{% block content %}<h1>课表设置</h1><p>严格六区块固定启用。MVP 使用固定周、三个年级相同铃声表；不同年级区块可错时。</p><form method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="v" value="{{ v }}">
+{% for key,label in [('title','方案名称'),('term','学期编码'),('days','每周天数'),('periods_per_day','每天节次'),('minutes_per_period','每节分钟数')] %}<label class="field">{{ label }}<input name="{{ key }}" value="{{ data.config[key] }}" required></label>{% endfor %}
+<label class="field">这些节次后不能连堂（英文逗号分隔，如4）<input name="break_after" value="{{ data.config.break_after|join(',') }}"></label><button>保存为新版本</button></form>{% endblock %}
